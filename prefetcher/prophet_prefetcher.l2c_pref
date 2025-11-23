@@ -1,0 +1,102 @@
+// Put these includes at top of file
+#include <unordered_map>
+#include <string>
+#include <fstream>
+#include <sstream>
+#include <cstdint>
+#include <ctime>
+#include <iostream>
+#include <iomanip>
+#include <algorithm>
+#include <vector>
+#include "cache.h"
+
+using namespace std;
+
+
+
+// Hint entry struct
+struct Hint { 
+    uint64_t addr;  //store the address
+    double avg,freq,conf; // store the average cycles,frequency,confidence
+    uint64_t last=0; // store the last accessed address
+    Hint(uint64_t a, double b, double c, double d, uint64_t e)
+        : addr(a), avg(b), freq(c), conf(d), last(e) {} 
+    };
+
+unordered_map<uint64_t,vector<Hint>> H;
+uint64_t cyc=0;
+
+
+
+uint64_t now(){   //return the current prefetcher cycle
+    return ++cyc; 
+}
+
+
+// Implementation
+
+bool load_hint_file(const string& p){
+    ifstream f(p); 
+    if(!f) return false;
+    string pc_s, ta_s;
+    double a,fr,co;
+
+    //reading values from hint file
+    while(f>>pc_s>>ta_s>>a>>fr>>co)
+        H[stoull(pc_s,0,16)].push_back({stoull(ta_s,0,16),a,fr,co,0}); //converting to dec & storing in hash map
+    return 1;
+}
+
+void CACHE::l2c_prefetcher_initialize() 
+{
+    if(!load_hint_file("profiler/trace_hints.txt")) exit(1);
+}
+
+
+uint32_t CACHE::l2c_prefetcher_operate(uint64_t addr,uint64_t ip,uint8_t cache_hit,uint8_t type,uint32_t metadata_in,uint8_t critical_ip_flag)
+{
+
+    auto it=H.find(ip); if(it==H.end()) return metadata_in;
+
+    auto& V=it->second; if(V.empty()) return metadata_in;
+    uint64_t t=now();
+
+    int best=-1;
+    double best_score=-1;
+
+    //find the address to be prefetched by checking frequency & confidence
+    for(int i=0;i<(int)V.size();i++){
+        auto& h=V[i];
+        if(t-h.last < max(8.0,h.avg)) continue; // don't prefetch if cycle is less than threshold 
+        double score = h.freq * h.conf;
+        if(score > best_score){
+            best_score = score;
+            best = i;
+        }
+    }
+
+    if(best<0) return metadata_in;
+
+    V[best].last = t;
+    if(MSHR.occupancy < (MSHR.SIZE>>1))
+    {
+      prefetch_line(ip,addr,V[best].addr,FILL_L2,0);
+    }
+    else
+    {
+      prefetch_line(ip,addr,V[best].addr,FILL_LLC,0);
+    }
+    return metadata_in;
+}
+
+
+uint32_t CACHE::l2c_prefetcher_cache_fill(uint64_t addr, uint32_t set, uint32_t match, uint8_t prefetch, uint64_t evicted_addr, uint32_t metadata_in)
+{
+  return metadata_in;
+}
+
+void CACHE::l2c_prefetcher_final_stats()
+{
+  cout << "CPU " << cpu << " Prophet Lite Prefetcher" << endl;
+}
